@@ -310,7 +310,12 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 		// nothing to do.
 		break
 	default:
-		r.errs <- fmt.Errorf("unknown document type for file %s", update.Path)
+		fmt.Println("WTF")
+		if update.Path[0] == '.' {
+			r.messages <- fmt.Sprintf("ignoring file %s", update.Path)
+		} else {
+			r.errs <- fmt.Errorf("unknown document type for file %s", update.Path)
+		}
 	}
 }
 
@@ -407,7 +412,11 @@ func (r *OfflineRenderer) Render() error {
 			// nothing to do.
 			break
 		default:
-			return fmt.Errorf("unknown document type for file %s", file.Path)
+			if file.Path[0] == '.' {
+				lg.Infof("ignoring file %s", file.Path)
+			} else {
+				return fmt.Errorf("unknown document type for file %s", file.Path)
+			}
 		}
 	}
 
