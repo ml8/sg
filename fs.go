@@ -40,10 +40,7 @@ type fsReader struct {
 // Create a new FSReader rooted at the given directory.
 func newFsReader(dir string) *fsReader {
 	return &fsReader{
-		updates: make(chan fsUpdate),
-		errs:    make(chan error),
-		root:    dir,
-		dirs:    NewSet[string](),
+		root: dir,
 	}
 }
 
@@ -53,8 +50,15 @@ func (f *fsReader) normalize(path string) string {
 	return strings.TrimPrefix(path, slashify(f.root))
 }
 
+func (f *fsReader) init() {
+	f.updates = make(chan fsUpdate)
+	f.errs = make(chan error)
+	f.dirs = NewSet[string]()
+}
+
 // Start reading the filesystem once. Channels will be closed when the read is complete.
 func (f *fsReader) Once() (<-chan fsUpdate, <-chan error, error) {
+	f.init()
 	f.wg = &sync.WaitGroup{}
 	if err := f.walk(); err != nil {
 		return nil, nil, err
@@ -73,6 +77,7 @@ func (f *fsReader) Once() (<-chan fsUpdate, <-chan error, error) {
 // Start reading the filesystem. Channels will remain open indefinitely unless
 // the reader failed to start reading.
 func (f *fsReader) Indefinitely() (<-chan fsUpdate, <-chan error, error) {
+	f.init()
 	var err error
 	if f.watcher, err = fsnotify.NewWatcher(); err != nil {
 		return nil, nil, err
