@@ -310,7 +310,6 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 		// nothing to do.
 		break
 	default:
-		fmt.Println("WTF")
 		if update.Path[0] == '.' {
 			r.messages <- fmt.Sprintf("ignoring file %s", update.Path)
 		} else {
