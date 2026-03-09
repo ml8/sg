@@ -1,3 +1,7 @@
+// Package sg is a static site generator that reads markdown and HTML pages with
+// YAML frontmatter, applies Go HTML templates, and outputs a rendered site.
+// It supports both one-shot rendering (OfflineRenderer) and watch-mode rendering
+// (OnlineRenderer) with filesystem watching and a built-in HTTP server.
 package sg
 
 import (
@@ -12,13 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-yaml/yaml"
+	"gopkg.in/yaml.v3"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
 	"go.abhg.dev/goldmark/anchor"
 	"go.abhg.dev/goldmark/mermaid"
+	"go.uber.org/zap"
 )
 
 var (
@@ -39,7 +44,12 @@ var (
 	// Frontmatter delimiter
 	FrontmatterDelimiter = []byte("---")
 
-	md = goldmark.New(
+	md = newMarkdownRenderer()
+)
+
+// newMarkdownRenderer creates the configured goldmark markdown renderer.
+func newMarkdownRenderer() goldmark.Markdown {
+	return goldmark.New(
 		goldmark.WithExtensions(
 			extension.GFM,
 			extension.Footnote,
@@ -57,14 +67,17 @@ var (
 			html.WithXHTML(),
 		),
 	)
-)
+}
 
-// Config for sites.
+// Config holds the configuration for site rendering.
 type Config struct {
 	InputDir        string
 	OutputDir       string
-	UseLocalRootUrl bool // if true, use http://localhost:8080 as the root url
-	QuiescentSecs   int  // period to wait before re-rendering pages on a template change
+	UseLocalRootUrl bool               // if true, use the local root url for serving
+	QuiescentSecs   int                // period to wait before re-rendering pages on a template change
+	Logger          *zap.SugaredLogger // optional; nil means no-op
+	Drafts          bool               // if true, include draft pages in the rendered output
+	Port            int                // port for the local server; used to construct localRootUrl
 }
 
 type documentType string
@@ -73,7 +86,6 @@ const (
 	pagesType     = documentType("pages")
 	templatesType = documentType("templates")
 	sgConfig      = documentType("sg.yaml")
-	localRootUrl  = "http://localhost:8080"
 )
 
 // Given a path, return the type of document.
@@ -101,7 +113,8 @@ func outputPath(path string) string {
 	return strings.TrimPrefix(path, slashify(string(fileType(path))))
 }
 
-// A Page.
+// Page represents a single page in the site. Markdown pages are parsed from
+// files with YAML frontmatter; raw pages (HTML, images, etc.) are copied directly.
 type Page struct {
 	// Required fields.
 	FilePath  string // filename relative to the input directory
@@ -122,7 +135,8 @@ type Page struct {
 	fs           *fsutil // fs to read page from
 }
 
-// A Site.
+// Site holds the state of a parsed site, including all pages, templates, and
+// indexes by slug, path, tag, and type. It is safe for concurrent use.
 type Site struct {
 	sync.Mutex
 
@@ -172,7 +186,7 @@ func (s *Site) readConfig(fs *fsutil) error {
 	return nil
 }
 
-// Look up the tempate associated with the given key.
+// Look up the template associated with the given key.
 func (s *Site) Template(key string) (*template.Template, error) {
 	s.Lock()
 	defer s.Unlock()
@@ -199,7 +213,7 @@ func (s *Site) PageBySlug(slug string) (*Page, error) {
 	if p, ok := s.bySlug[slug]; ok {
 		return p, nil
 	}
-	return nil, ErrSlugNotFound
+	return nil, fmt.Errorf("slug %q: %w", slug, ErrSlugNotFound)
 }
 
 // Lookup page by input path.
@@ -209,7 +223,7 @@ func (s *Site) PageByPath(path string) (*Page, error) {
 	if p, ok := s.byPath[path]; ok {
 		return p, nil
 	}
-	return nil, ErrPathNotFound
+	return nil, fmt.Errorf("path %q: %w", path, ErrPathNotFound)
 }
 
 // Get all pages with the given tag.
@@ -221,7 +235,7 @@ func (s *Site) Tag(tag string) ([]*Page, error) {
 		slices.SortFunc(t, comparePages)
 		return t, nil
 	}
-	return []*Page{}, ErrTagNotFound
+	return []*Page{}, fmt.Errorf("tag %q: %w", tag, ErrTagNotFound)
 }
 
 // Get all pages with the given type.
@@ -233,7 +247,7 @@ func (s *Site) Type(typ string) ([]*Page, error) {
 		slices.SortFunc(t, comparePages)
 		return t, nil
 	}
-	return []*Page{}, ErrTypeNotFound
+	return []*Page{}, fmt.Errorf("type %q: %w", typ, ErrTypeNotFound)
 }
 
 // Remove all cross-references to the given page.
@@ -311,7 +325,7 @@ func (s *Site) Pages() []*Page {
 	for _, p := range s.bySlug {
 		ret = append(ret, p)
 	}
-	lg.Debugf("Getting %n pages", len(ret))
+	lg.Debugf("Getting %d pages", len(ret))
 	return ret
 }
 
@@ -341,11 +355,14 @@ func newPageFrom(fs *fsutil, path string, _ Config) (*Page, error) {
 	} else {
 		pg, err = newRawPage(fs, path)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
 	if pg != nil {
 		pg.UrlPath = outputPath(pg.UrlPath)
 		pg.fs = fs
 	}
-	return pg, err
+	return pg, nil
 }
 
 // Create a raw page from the given path.
@@ -356,6 +373,7 @@ func newRawPage(_ *fsutil, path string) (*Page, error) {
 		Slug:     path,
 		Title:    path,
 		Type:     "raw",
+		IsRaw:    true,
 	}
 	return page, page.validate()
 }

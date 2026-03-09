@@ -1,24 +1,19 @@
 package sg
 
 import (
-	"flag"
-
 	"go.uber.org/zap"
 )
 
 var lg *zap.SugaredLogger
 
-var (
-	logs = flag.Bool("logs", false, "enable logging")
-)
+func init() {
+	lg = zap.NewNop().Sugar()
+}
 
-func logging() {
-	if lg != nil {
-		return
-	}
-	if *logs {
-		t, _ := zap.NewProduction()
-		lg = t.Sugar()
+// SetLogger sets the package-level logger. If l is nil, a no-op logger is used.
+func SetLogger(l *zap.SugaredLogger) {
+	if l != nil {
+		lg = l
 	} else {
 		lg = zap.NewNop().Sugar()
 	}

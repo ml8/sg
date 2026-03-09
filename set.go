@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-// Simple set implementation.
+// Set is a generic, concurrency-safe set implementation.
 type Set[T comparable] struct {
 	sync.RWMutex
 	s map[T]struct{}

@@ -228,7 +228,7 @@ func (f *fsutil) WriteFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// Remove the given file form the output directory.
+// Remove the given file from the output directory.
 func (f *fsutil) Remove(path string) error {
 	if path == "" {
 		return nil
@@ -259,7 +259,7 @@ func (f *fsutil) CopyFile(src, dst string) error {
 
 // Ensure a path is terminated with a /.
 func slashify(s string) string {
-	if s[len(s)-1] == '/' {
+	if s == "" || s[len(s)-1] == '/' {
 		return s
 	}
 	return s + "/"

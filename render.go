@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Generic renderer interface.
+// Renderer is the interface for site renderers.
 type Renderer interface {
 	Render() error
 }
@@ -25,6 +25,10 @@ type Renderer interface {
 // TODO: only re-render when a page is affected by the template change.
 type OnlineRenderer struct {
 	Config Config
+
+	// OnReload is called after a successful render. Use this to trigger
+	// LiveReload notifications.
+	OnReload func()
 
 	fs     *fsutil
 	site   *Site
@@ -50,7 +54,7 @@ type rqItem struct {
 	gen  *generation // should be nil on first render attempt.
 }
 
-// Tracks logical tiemstamp of elements being added to a site. Used to determine
+// Tracks logical timestamp of elements being added to a site. Used to determine
 // whether a page should be re-rendered.
 type generation struct {
 	sync.Mutex
@@ -99,7 +103,7 @@ func (g *generation) gtSlug(other *generation) bool {
 	return g.slug > other.slug
 }
 
-// Compare tempate generation.
+// Compare template generation.
 func (g *generation) gtTemplate(other *generation) bool {
 	g.Lock()
 	defer g.Unlock()
@@ -128,7 +132,7 @@ func (r *OnlineRenderer) init() (err error) {
 // Start rendering. Watches the filesystem for any updates and renders updates
 // as they arrive. Does not return unless rendering failed to start.
 func (r *OnlineRenderer) Render() (err error) {
-	logging()
+	SetLogger(r.Config.Logger)
 	// Init internal structures.
 	if err = r.init(); err != nil {
 		return err
@@ -238,6 +242,11 @@ func (r *OnlineRenderer) render(item rqItem) {
 	if err := r.fs.WriteFile(p.UrlPath, b); err != nil {
 		// Ok to block, last op.
 		r.errs <- err
+		return
+	}
+
+	if r.OnReload != nil {
+		r.OnReload()
 	}
 }
 
@@ -276,14 +285,14 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 			// The first time we attempt to render, we do it as of when it reaches
 			// the head of the queue.
 			r.rq <- rqItem{page: p, gen: nil}
-			break
-		}
-		// All other files we just copy directly.
-		lg.Debugf("copying file %s", update.Path)
-		go func() { r.messages <- fmt.Sprintf("copying file %s", update.Path) }()
-		if err := r.fs.CopyFile(update.Path, outputPath(update.Path)); err != nil {
-			r.errs <- err
-			return
+		} else {
+			// All other files we just copy directly.
+			lg.Debugf("copying file %s", update.Path)
+			go func() { r.messages <- fmt.Sprintf("copying file %s", update.Path) }()
+			if err := r.fs.CopyFile(update.Path, outputPath(update.Path)); err != nil {
+				r.errs <- err
+				return
+			}
 		}
 	case templatesType:
 		byts, err := r.fs.ReadFile(update.Path)
@@ -308,7 +317,6 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 		}
 	case sgConfig:
 		// nothing to do.
-		break
 	default:
 		if update.Path[0] == '.' {
 			r.messages <- fmt.Sprintf("ignoring file %s", update.Path)
@@ -318,7 +326,7 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 	}
 }
 
-// Handles a delete operation from the filesyste.
+// Handles a delete operation from the filesystem.
 func (r *OnlineRenderer) handleDelete(update fsUpdate) {
 	lg.Debugf("handling delete %+v", update)
 	path := update.Path
@@ -351,7 +359,7 @@ func (r *OnlineRenderer) fsUpdateThread() {
 	}
 }
 
-// Render a site in one-shot mode.
+// OfflineRenderer renders a site in one-shot mode.
 type OfflineRenderer struct {
 	Config Config
 }
@@ -360,7 +368,7 @@ type OfflineRenderer struct {
 // one-shot and returns when rendering is complete.
 func (r *OfflineRenderer) Render() error {
 	// Grab all pages; render them.
-	logging()
+	SetLogger(r.Config.Logger)
 
 	fs := newFS(r.Config.InputDir, r.Config.OutputDir)
 
@@ -392,12 +400,12 @@ func (r *OfflineRenderer) Render() error {
 			if ext == ".md" || ext == ".html" || ext == ".htm" {
 				lg.Debugf("buffering renderable file %s", file.Path)
 				pages = append(pages, path)
-				break
-			}
-			// The rest of files we copy as assets.
-			lg.Debugf("copying file %s", file.Path)
-			if err := fs.CopyFile(path, outputPath(path)); err != nil {
-				return err
+			} else {
+				// The rest of files we copy as assets.
+				lg.Debugf("copying file %s", file.Path)
+				if err := fs.CopyFile(path, outputPath(path)); err != nil {
+					return err
+				}
 			}
 		case templatesType:
 			byts, err := fs.ReadFile(path)
@@ -409,7 +417,6 @@ func (r *OfflineRenderer) Render() error {
 			}
 		case sgConfig:
 			// nothing to do.
-			break
 		default:
 			if file.Path[0] == '.' {
 				lg.Infof("ignoring file %s", file.Path)
@@ -432,6 +439,10 @@ func (r *OfflineRenderer) Render() error {
 		p, err := newPageFrom(fs, path, r.Config)
 		if err != nil {
 			return err
+		}
+		if p.Draft && !r.Config.Drafts {
+			lg.Debugf("skipping draft page %s", p.Slug)
+			continue
 		}
 		site.AddPage(p)
 	}
@@ -462,6 +473,9 @@ func (ctx RenderContext) RenderPage(p *Page) ([]byte, error) {
 		lg.Debugf("rendering raw page %s", p.FilePath)
 		// For raw pages, we allow them to use
 		t, err := ctx.Site.Template("")
+		if err != nil {
+			return nil, err
+		}
 		cnt, err := p.RawContent()
 		if err != nil {
 			return nil, err
@@ -519,7 +533,11 @@ func (ctx RenderContext) SlugURL(slug string) (string, error) {
 	} else {
 		u, _ = url.JoinPath(ctx.Site.RootUrl, p.UrlPath)
 		if ctx.cfg.UseLocalRootUrl {
-			u, _ = url.JoinPath(localRootUrl, p.UrlPath)
+			port := ctx.cfg.Port
+			if port == 0 {
+				port = 8080
+			}
+			u, _ = url.JoinPath(fmt.Sprintf("http://localhost:%d", port), p.UrlPath)
 		}
 		lg.Debugf("slug url %s: %s", slug, u)
 		return u, nil
@@ -545,32 +563,32 @@ func renderTemplate(t *template.Template, ctx any) ([]byte, error) {
 type timer struct {
 	sync.Mutex
 
-	t time.Duration
-	d bool
-	l time.Time
+	timeout  time.Duration
+	done     bool
+	lastTick time.Time
 }
 
 func newTimer(timeoutSecs int) *timer {
-	return &timer{t: time.Duration(timeoutSecs) * time.Second}
+	return &timer{timeout: time.Duration(timeoutSecs) * time.Second}
 }
 
 func (r *timer) Done() bool {
 	r.Lock()
 	defer r.Unlock()
-	if r.l.IsZero() {
-		r.l = time.Now()
+	if r.lastTick.IsZero() {
+		r.lastTick = time.Now()
 	}
 
-	if !r.d && time.Since(r.l) > r.t {
-		r.d = true
+	if !r.done && time.Since(r.lastTick) > r.timeout {
+		r.done = true
 	}
-	r.l = time.Now()
-	return r.d
+	r.lastTick = time.Now()
+	return r.done
 }
 
 func (r *timer) Reset() {
 	r.Lock()
 	defer r.Unlock()
-	r.d = false
-	r.l = time.Time{}
+	r.done = false
+	r.lastTick = time.Time{}
 }
