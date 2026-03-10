@@ -30,6 +30,10 @@ type OnlineRenderer struct {
 	// LiveReload notifications.
 	OnReload func()
 
+	// Formatter controls how watch-mode messages are printed. If nil, a
+	// PlainFormatter is used.
+	Formatter OutputFormatter
+
 	fs     *fsutil
 	site   *Site
 	reader *fsReader
@@ -40,7 +44,7 @@ type OnlineRenderer struct {
 
 	// Internal queues.
 	errs     chan error
-	messages chan string
+	messages chan Message
 	rq       chan rqItem
 
 	// Filesystem updates.
@@ -116,8 +120,11 @@ func (g *generation) gtTemplate(other *generation) bool {
 func (r *OnlineRenderer) init() (err error) {
 	r.gen = &generation{}
 	r.errs = make(chan error)
-	r.messages = make(chan string)
+	r.messages = make(chan Message)
 	r.rq = make(chan rqItem)
+	if r.Formatter == nil {
+		r.Formatter = NewPlainFormatter()
+	}
 
 	r.timer = newTimer(r.Config.QuiescentSecs)
 
@@ -171,12 +178,12 @@ func (r *OnlineRenderer) Render() (err error) {
 			if !ok {
 				return nil
 			}
-			fmt.Println("Error:", err)
+			r.Formatter.FormatError(err)
 		case msg, ok := <-r.messages:
 			if !ok {
 				return nil
 			}
-			fmt.Println("Message:", msg)
+			r.Formatter.FormatMessage(msg)
 		}
 	}
 }
@@ -237,7 +244,7 @@ func (r *OnlineRenderer) render(item rqItem) {
 		}()
 	}
 
-	go func() { r.messages <- fmt.Sprintf("rendered page %s", p.Slug) }()
+	go func() { r.messages <- Message{MsgRendered, p.Slug} }()
 
 	if err := r.fs.WriteFile(p.UrlPath, b); err != nil {
 		// Ok to block, last op.
@@ -288,7 +295,7 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 		} else {
 			// All other files we just copy directly.
 			lg.Debugf("copying file %s", update.Path)
-			go func() { r.messages <- fmt.Sprintf("copying file %s", update.Path) }()
+			go func() { r.messages <- Message{MsgCopied, update.Path} }()
 			if err := r.fs.CopyFile(update.Path, outputPath(update.Path)); err != nil {
 				r.errs <- err
 				return
@@ -304,7 +311,7 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 			r.errs <- err
 			return
 		}
-		go func() { r.messages <- fmt.Sprintf("added template %s", update.Path) }()
+		go func() { r.messages <- Message{MsgTemplateAdded, update.Path} }()
 		r.gen.nextTemplate()
 
 		if r.timer.Done() {
@@ -319,7 +326,7 @@ func (r *OnlineRenderer) handleCreate(update fsUpdate) {
 		// nothing to do.
 	default:
 		if update.Path[0] == '.' {
-			r.messages <- fmt.Sprintf("ignoring file %s", update.Path)
+			r.messages <- Message{MsgIgnored, update.Path}
 		} else {
 			r.errs <- fmt.Errorf("unknown document type for file %s", update.Path)
 		}
@@ -340,7 +347,7 @@ func (r *OnlineRenderer) handleDelete(update fsUpdate) {
 		}
 		// TODO: Re-render any pages with cross-references.
 	}
-	go func() { r.messages <- fmt.Sprintf("deleting file %s", path) }()
+	go func() { r.messages <- Message{MsgDeleted, path} }()
 	if err := r.fs.Remove(path); err != nil {
 		r.errs <- err
 	}

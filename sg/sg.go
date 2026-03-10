@@ -22,6 +22,7 @@ var (
 	verbose = flag.Bool("v", false, "enable verbose logging")
 	port    = flag.Int("p", 8080, "port for the local server")
 	drafts  = flag.Bool("drafts", false, "include draft pages in the rendered output")
+	plain   = flag.Bool("plain", false, "disable colored output in watch mode")
 )
 
 func main() {
@@ -117,6 +118,11 @@ func main() {
 		}
 		if lr != nil {
 			r.OnReload = lr.Reload
+		}
+		if *plain {
+			r.Formatter = sg.NewPlainFormatter()
+		} else {
+			r.Formatter = sg.NewColorFormatter()
 		}
 
 		go func() {
