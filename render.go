@@ -529,6 +529,14 @@ func (ctx RenderContext) WriteFeed(fs *fsutil) error {
 
 func ToChannel(ctx RenderContext, s *Site) rss.Channel {
 	c := rss.NewChannel(s.Title, s.RootUrl, s.Description)
+	if s.FeedUrl != "" {
+		feedURL := s.RootUrl + "/" + s.FeedUrl
+		c.AtomLink = &rss.AtomLink{
+			Href: feedURL,
+			Rel:  "self",
+			Type: "application/rss+xml",
+		}
+	}
 	return c
 }
 
@@ -541,6 +549,7 @@ func ToItem(ctx RenderContext, p *Page) (rss.Item, error) {
 		lg.Errorf("error generating link for page %s: %v", p.Slug, err)
 		return rss.Item{}, err
 	}
+	item.GUID = rss.NewGUID(item.Link, true)
 	return item, nil
 }
 

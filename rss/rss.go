@@ -12,6 +12,7 @@ import (
 type rssFeed struct {
 	XMLName xml.Name `xml:"rss"`
 	Version string   `xml:"version,attr"`
+	AtomNS  string   `xml:"xmlns:atom,attr,omitempty"`
 	Channel Channel  `xml:"channel"`
 }
 
@@ -41,6 +42,16 @@ func NewItem(title, description string) Item {
 		Title:       title,
 		Description: description,
 	}
+}
+
+// NewGUID creates a GUID element. If isPermaLink is true, the value is assumed
+// to be a URL that can be used as a permanent link to the item.
+func NewGUID(value string, isPermaLink bool) *GUID {
+	g := &GUID{Value: value}
+	if !isPermaLink {
+		g.IsPermaLink = "false"
+	}
+	return g
 }
 
 // Validate checks that all required channel fields are present and that all
@@ -80,6 +91,9 @@ func (c *Channel) AddItem(item Item) {
 // ToXML marshals the channel as a complete RSS 2.0 XML document.
 func (c Channel) ToXML() ([]byte, error) {
 	feed := rssFeed{Version: "2.0", Channel: c}
+	if c.AtomLink != nil {
+		feed.AtomNS = "http://www.w3.org/2005/Atom"
+	}
 	data, err := xml.MarshalIndent(feed, "", "  ")
 	if err != nil {
 		return nil, err
@@ -116,6 +130,11 @@ type Channel struct {
 	XMLName xml.Name `xml:"channel" json:"-"`
 	// Title is the name of the channel.
 	Title string `xml:"title" json:"title"`
+	// AtomLink is a self-referencing link using the Atom namespace, recommended
+	// for interoperability with feed readers. Must precede Link in the struct
+	// so Go's encoding/xml can distinguish namespaced and plain <link> elements
+	// during unmarshaling.
+	AtomLink *AtomLink `xml:"http://www.w3.org/2005/Atom link,omitempty" json:"atomLink,omitempty"`
 	// Link is the URL to the HTML website corresponding to the channel.
 	Link string `xml:"link" json:"link"`
 	// Description is a phrase or sentence describing the channel.
@@ -149,9 +168,9 @@ type Channel struct {
 	// TextInput specifies a text input box that can be displayed with the channel.
 	TextInput *TextInput `xml:"textInput,omitempty" json:"textInput,omitempty"`
 	// SkipHours is a hint for aggregators telling them which hours they can skip.
-	SkipHours []int `xml:"skipHours>hour,omitempty" json:"skipHours,omitempty"`
+	SkipHours *SkipHours `xml:"skipHours,omitempty" json:"skipHours,omitempty"`
 	// SkipDays is a hint for aggregators telling them which days they can skip.
-	SkipDays []string `xml:"skipDays>day,omitempty" json:"skipDays,omitempty"`
+	SkipDays *SkipDays `xml:"skipDays,omitempty" json:"skipDays,omitempty"`
 	// Items is the list of items contained in the channel.
 	Items []Item `xml:"item,omitempty" json:"items,omitempty"`
 }
@@ -258,4 +277,38 @@ type Source struct {
 	URL string `xml:"url,attr" json:"url"`
 	// Value is the name of the source channel.
 	Value string `xml:",chardata" json:"value"`
+}
+
+// AtomLink represents an Atom link element used for self-referencing feeds.
+type AtomLink struct {
+	Href string `xml:"href,attr" json:"href"`
+	Rel  string `xml:"rel,attr" json:"rel"`
+	Type string `xml:"type,attr" json:"type"`
+}
+
+// MarshalXML writes an <atom:link> element using the conventional namespace
+// prefix rather than Go's default inline xmlns declaration.
+func (a AtomLink) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name = xml.Name{Local: "atom:link"}
+	start.Attr = []xml.Attr{
+		{Name: xml.Name{Local: "href"}, Value: a.Href},
+		{Name: xml.Name{Local: "rel"}, Value: a.Rel},
+		{Name: xml.Name{Local: "type"}, Value: a.Type},
+	}
+	if err := e.EncodeToken(start); err != nil {
+		return err
+	}
+	return e.EncodeToken(start.End())
+}
+
+// SkipHours wraps a list of hours for proper XML marshaling. Using a struct
+// avoids Go's encoding/xml emitting empty <skipHours> wrapper elements.
+type SkipHours struct {
+	Hours []int `xml:"hour" json:"hours"`
+}
+
+// SkipDays wraps a list of days for proper XML marshaling. Using a struct
+// avoids Go's encoding/xml emitting empty <skipDays> wrapper elements.
+type SkipDays struct {
+	Days []string `xml:"day" json:"days"`
 }

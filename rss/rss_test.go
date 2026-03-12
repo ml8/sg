@@ -49,8 +49,8 @@ func fullChannel() Channel {
 			Name:        "q",
 			Link:        "https://horriblebirds.com/report",
 		},
-		SkipHours: []int{0, 1, 2},
-		SkipDays:  []string{"Saturday", "Sunday"},
+		SkipHours: &SkipHours{Hours: []int{0, 1, 2}},
+		SkipDays:  &SkipDays{Days: []string{"Saturday", "Sunday"}},
 		Items: []Item{
 			{
 				Title:       "Area Goose Maintains Eye Contact for Entire Lunch",
@@ -251,6 +251,89 @@ func TestMarshalProducesValidXML(t *testing.T) {
 	}
 }
 
+func TestMarshalOmitsEmptySkipElements(t *testing.T) {
+	ch := NewChannel("Title", "https://example.com", "A description.")
+	ch.AddItem(NewItem("Item", "Description"))
+	xmlStr := marshalFeed(t, ch)
+
+	if strings.Contains(xmlStr, "<skipHours") {
+		t.Error("empty skipHours should not appear in XML")
+	}
+	if strings.Contains(xmlStr, "<skipDays") {
+		t.Error("empty skipDays should not appear in XML")
+	}
+}
+
+func TestMarshalIncludesSkipElementsWhenPopulated(t *testing.T) {
+	ch := NewChannel("Title", "https://example.com", "A description.")
+	ch.SkipHours = &SkipHours{Hours: []int{0, 1, 2}}
+	ch.SkipDays = &SkipDays{Days: []string{"Saturday", "Sunday"}}
+	xmlStr := marshalFeed(t, ch)
+
+	if !strings.Contains(xmlStr, "<skipHours>") {
+		t.Error("populated skipHours should appear in XML")
+	}
+	if !strings.Contains(xmlStr, "<hour>0</hour>") {
+		t.Error("skipHours should contain hour elements")
+	}
+	if !strings.Contains(xmlStr, "<skipDays>") {
+		t.Error("populated skipDays should appear in XML")
+	}
+	if !strings.Contains(xmlStr, "<day>Saturday</day>") {
+		t.Error("skipDays should contain day elements")
+	}
+}
+
+func TestMarshalAtomLink(t *testing.T) {
+	ch := NewChannel("Title", "https://example.com", "A description.")
+	ch.AtomLink = &AtomLink{
+		Href: "https://example.com/feed.xml",
+		Rel:  "self",
+		Type: "application/rss+xml",
+	}
+	xmlStr := marshalFeed(t, ch)
+
+	if !strings.Contains(xmlStr, `xmlns:atom="http://www.w3.org/2005/Atom"`) {
+		t.Error("missing atom namespace declaration")
+	}
+	if !strings.Contains(xmlStr, `<atom:link href="https://example.com/feed.xml"`) {
+		t.Error("missing atom:link element")
+	}
+	if !strings.Contains(xmlStr, `rel="self"`) {
+		t.Error("missing rel=self attribute on atom:link")
+	}
+	if !strings.Contains(xmlStr, `type="application/rss+xml"`) {
+		t.Error("missing type attribute on atom:link")
+	}
+}
+
+func TestMarshalOmitsAtomNamespaceWhenNoAtomLink(t *testing.T) {
+	ch := NewChannel("Title", "https://example.com", "A description.")
+	xmlStr := marshalFeed(t, ch)
+
+	if strings.Contains(xmlStr, "xmlns:atom") {
+		t.Error("atom namespace should not appear when AtomLink is nil")
+	}
+}
+
+func TestNewGUID(t *testing.T) {
+	g := NewGUID("https://example.com/post/1", true)
+	if g.Value != "https://example.com/post/1" {
+		t.Errorf("Value: got %q", g.Value)
+	}
+	if g.IsPermaLink != "" {
+		t.Errorf("IsPermaLink should be empty for permalink GUIDs (defaults to true), got %q", g.IsPermaLink)
+	}
+
+	g2 := NewGUID("unique-id-123", false)
+	if g2.Value != "unique-id-123" {
+		t.Errorf("Value: got %q", g2.Value)
+	}
+	if g2.IsPermaLink != "false" {
+		t.Errorf("IsPermaLink: got %q, want \"false\"", g2.IsPermaLink)
+	}
+}
+
 func TestUnmarshalFeed(t *testing.T) {
 	rawXML := `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -305,10 +388,10 @@ func TestUnmarshalFeed(t *testing.T) {
 	if len(ch.Category) != 1 || ch.Category[0].Domain != "Syndic8" || ch.Category[0].Value != "1765" {
 		t.Errorf("Category: got %+v", ch.Category)
 	}
-	if len(ch.SkipHours) != 2 || ch.SkipHours[0] != 0 || ch.SkipHours[1] != 6 {
+	if ch.SkipHours == nil || len(ch.SkipHours.Hours) != 2 || ch.SkipHours.Hours[0] != 0 || ch.SkipHours.Hours[1] != 6 {
 		t.Errorf("SkipHours: got %v, want [0 6]", ch.SkipHours)
 	}
-	if len(ch.SkipDays) != 1 || ch.SkipDays[0] != "Sunday" {
+	if ch.SkipDays == nil || len(ch.SkipDays.Days) != 1 || ch.SkipDays.Days[0] != "Sunday" {
 		t.Errorf("SkipDays: got %v, want [Sunday]", ch.SkipDays)
 	}
 	if ch.Image == nil || ch.Image.URL != "https://test.example.com/img.png" {
