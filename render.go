@@ -7,9 +7,12 @@ import (
 	"html/template"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ml8/sg/rss"
 )
 
 // Renderer is the interface for site renderers.
@@ -46,6 +49,7 @@ type OnlineRenderer struct {
 	errs     chan error
 	messages chan Message
 	rq       chan rqItem
+	feedq    chan any
 
 	// Filesystem updates.
 	fsupdates <-chan fsUpdate
@@ -122,6 +126,7 @@ func (r *OnlineRenderer) init() (err error) {
 	r.errs = make(chan error)
 	r.messages = make(chan Message)
 	r.rq = make(chan rqItem)
+	r.feedq = make(chan any)
 	if r.Formatter == nil {
 		r.Formatter = NewPlainFormatter()
 	}
@@ -168,8 +173,9 @@ func (r *OnlineRenderer) Render() (err error) {
 	// Start listening for filesystem events.
 	go r.fsUpdateThread()
 
-	// Start rendering thread.
+	// Start rendering threads.
 	go r.renderThread()
+	go r.feedThread()
 
 	// Output errors.
 	for {
@@ -229,7 +235,6 @@ func (r *OnlineRenderer) render(item rqItem) {
 	ctx := RenderContext{
 		cfg:  r.Config,
 		Site: r.site,
-		Page: p,
 	}
 	b, err := ctx.RenderPage(p)
 	if err != nil {
@@ -246,6 +251,12 @@ func (r *OnlineRenderer) render(item rqItem) {
 
 	go func() { r.messages <- Message{MsgRendered, p.Slug} }()
 
+	// Was this a feed item? If so, re-render the feed.
+	// TODO: track feed items that need to be deleted from the feed.
+	if slices.Contains(p.Tags, r.site.FeedTag) {
+		r.feedq <- struct{}{}
+	}
+
 	if err := r.fs.WriteFile(p.UrlPath, b); err != nil {
 		// Ok to block, last op.
 		r.errs <- err
@@ -261,6 +272,20 @@ func (r *OnlineRenderer) renderThread() {
 	// Pull from render queue and render.
 	for p := range r.rq {
 		go r.render(p)
+	}
+}
+
+func (r *OnlineRenderer) feedThread() {
+	ctx := RenderContext{
+		cfg:  r.Config,
+		Site: r.site,
+	}
+	// Pull from feed events and re-render feed.
+	for range r.feedq {
+		// We don't do this in the background; we're writing a single feed.
+		if err := ctx.WriteFeed(r.fs); err != nil {
+			r.errs <- err
+		}
 	}
 }
 
@@ -344,6 +369,9 @@ func (r *OnlineRenderer) handleDelete(update fsUpdate) {
 			// The file we should remove is the UrlPath, not the filepath, which
 			// includes the prefix of the pages directory.
 			path = pg.UrlPath
+			if slices.Contains(pg.Tags, r.site.FeedTag) {
+				r.feedq <- struct{}{}
+			}
 		}
 		// TODO: Re-render any pages with cross-references.
 	}
@@ -441,6 +469,11 @@ func (r *OfflineRenderer) Render() error {
 		return allErrs
 	}
 
+	ctx := RenderContext{
+		cfg:  r.Config,
+		Site: site,
+	}
+
 	// Now we render all pages.
 	for _, path := range pages {
 		p, err := newPageFrom(fs, path, r.Config)
@@ -458,11 +491,6 @@ func (r *OfflineRenderer) Render() error {
 		if err != nil {
 			return err
 		}
-		ctx := RenderContext{
-			cfg:  r.Config,
-			Site: site,
-			Page: page,
-		}
 		b, err := ctx.RenderPage(page)
 		if err != nil {
 			return err
@@ -472,10 +500,82 @@ func (r *OfflineRenderer) Render() error {
 		}
 	}
 
+	// Finally, we render the feed.
+	err = ctx.WriteFeed(fs)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
+func (ctx RenderContext) WriteFeed(fs *fsutil) error {
+	b, err := ctx.RenderFeed()
+	if err != nil {
+		return err
+	}
+
+	if b == nil {
+		lg.Debugf("nothing to render for feed")
+		return nil
+	}
+
+	if err := fs.WriteFile(ctx.Site.FeedUrl, b); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ToChannel(ctx RenderContext, s *Site) rss.Channel {
+	c := rss.NewChannel(s.Title, s.RootUrl, s.Description)
+	return c
+}
+
+func ToItem(ctx RenderContext, p *Page) (rss.Item, error) {
+	var err error
+	item := rss.NewItem(p.Title, p.Description)
+	item.PubDate = p.Date.Format(time.RFC1123Z)
+	item.Link, err = ctx.SlugURL(p.Slug)
+	if err != nil {
+		lg.Errorf("error generating link for page %s: %v", p.Slug, err)
+		return rss.Item{}, err
+	}
+	return item, nil
+}
+
+func (ctx RenderContext) RenderFeed() ([]byte, error) {
+	lg.Debugf("rendering feed")
+	if ctx.Site.FeedUrl == "" || ctx.Site.FeedTag == "" {
+		lg.Debugf("feed url or tag not set; skipping feed render")
+		return nil, nil
+	}
+
+	pgs, err := ctx.Site.Tag(ctx.Site.FeedTag)
+	if err != nil {
+		return nil, nil
+	}
+
+	ch := ToChannel(ctx, ctx.Site)
+	if err := ch.Validate(); err != nil {
+		return nil, err
+	}
+
+	for _, p := range pgs {
+		item, err := ToItem(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		if err = item.Validate(); err != nil {
+			return nil, fmt.Errorf("feed item for page %s is not valid", p.Slug)
+		}
+		ch.AddItem(item)
+	}
+	return ch.ToXML()
+}
+
 func (ctx RenderContext) RenderPage(p *Page) ([]byte, error) {
+	ctx.Page = p
 	if p.Type == "raw" {
 		lg.Debugf("rendering raw page %s", p.FilePath)
 		// For raw pages, we allow them to use
@@ -512,6 +612,8 @@ func (ctx RenderContext) RenderPage(p *Page) ([]byte, error) {
 type RenderContext struct {
 	cfg  Config
 	Site *Site
+
+	// Used for rendering a single page; set by RenderPage.
 	Page *Page
 }
 

@@ -153,6 +153,13 @@ func (f *fsReader) walk() error {
 			return err
 		}
 
+		// Ignore dotfiles.
+		for _, part := range strings.Split(path, string(filepath.Separator)) {
+			if strings.HasPrefix(part, ".") {
+				return nil
+			}
+		}
+
 		isDir := d.IsDir()
 		if isDir {
 			f.dirs.Add(path)

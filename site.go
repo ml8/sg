@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
@@ -24,6 +23,7 @@ import (
 	"go.abhg.dev/goldmark/anchor"
 	"go.abhg.dev/goldmark/mermaid"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -126,10 +126,11 @@ type Page struct {
 	OrderHint int
 
 	// Fields for markdown pages.
-	Draft    bool      `yaml:"draft"`
-	Date     time.Time `yaml:"date"`
-	Tags     []string  `yaml:"tags"`
-	Ordering string    `yaml:"ordering"`
+	Draft       bool      `yaml:"draft"`
+	Date        time.Time `yaml:"date"`
+	Tags        []string  `yaml:"tags"`
+	Ordering    string    `yaml:"ordering"`
+	Description string    `yaml:"description"`
 
 	contentIndex int     // index of content
 	fs           *fsutil // fs to read page from
@@ -142,6 +143,12 @@ type Site struct {
 
 	Title   string `yaml:"title"`
 	RootUrl string `yaml:"root_url"`
+
+	Description string `yaml:"description"`
+
+	// Relative to Site root, optional.
+	FeedUrl string `yaml:"feed_url"`
+	FeedTag string `yaml:"feed_tag"`
 
 	templates *template.Template
 	bySlug    map[string]*Page
@@ -183,6 +190,25 @@ func (s *Site) readConfig(fs *fsutil) error {
 		return fmt.Errorf("error parsing config: %w", err)
 	}
 	lg.Debugf("title: %s; rootUrl: %s", s.Title, s.RootUrl)
+	return s.validate()
+}
+
+func (s *Site) validate() error {
+	if s.RootUrl == "" {
+		return errors.New("missing root_url")
+	}
+	if s.Title == "" {
+		return errors.New("missing title")
+	}
+	if s.FeedUrl != "" && s.FeedTag == "" {
+		return errors.New("feed_url provided without feed_tag")
+	}
+	if s.FeedTag != "" && s.FeedUrl == "" {
+		return errors.New("feed_tag provided without feed_url")
+	}
+	if s.FeedUrl != "" && s.Description == "" {
+		return errors.New("feed_url provided without description")
+	}
 	return nil
 }
 
