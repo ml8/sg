@@ -1,7 +1,7 @@
 # `sg` - another shitty static site generator
 
 See [github.com/ml8/ml8.github.io](https://github.com/ml8/ml8.github.io) for an
-example.
+example (https://ml8.sh).
 
 Input site structure:
 
